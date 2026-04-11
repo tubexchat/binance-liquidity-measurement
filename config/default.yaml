@@ -1,0 +1,37 @@
+symbols:
+  default_mode: top
+  default_top_n: 50
+
+metrics:
+  depth_pcts: [0.001, 0.005, 0.01, 0.02]
+  obi_levels: [5, 10, 20]
+  orderbook_limit: 20
+  slippage_levels_usdt: [1000, 5000, 10000, 50000, 100000, 500000, 1000000]
+  max_slippage_bps: 20
+  amihud:
+    interval: 5m
+    lookback_bars: 288
+  taker_ratio_window: 1000
+
+score_weights:
+  spread: 0.25
+  capacity: 0.35
+  amihud: 0.25
+  obi_stability: 0.15
+
+data:
+  rest_base: https://fapi.binance.com
+  ws_base: wss://fstream.binance.com
+  max_concurrent_requests: 20
+  rate_limit_weight_per_min: 2400
+  retry_attempts: 3
+  retry_backoff_base: 1.0
+
+storage:
+  db_path: liquidity.db
+  wal_mode: true
+
+logging:
+  level: INFO
+  file: logs/bliq.log
+  rotation: "10 MB"
