@@ -14,6 +14,9 @@ def simulate_market_order(
     before the requested notional is met, ``filled_notional`` is the actual
     amount consumed.
     """
+    if side not in ("buy", "sell"):
+        raise ValueError(f"side must be 'buy' or 'sell', got {side!r}")
+
     if notional_usdt <= 0:
         mid = ob.mid
         return mid, 0.0
@@ -23,14 +26,13 @@ def simulate_market_order(
     filled_notional = 0.0
     filled_qty = 0.0
     for lvl in levels:
-        if remaining <= 0 or lvl.qty <= 0:
+        if lvl.qty <= 0:
             continue
         level_notional = lvl.price * lvl.qty
         if level_notional >= remaining:
             qty_taken = remaining / lvl.price
             filled_notional += remaining
             filled_qty += qty_taken
-            remaining = 0
             break
         filled_notional += level_notional
         filled_qty += lvl.qty
@@ -57,6 +59,8 @@ def _capacity_at(ob: OrderBook, *, side: str, max_bps: float) -> float:
     level where slippage exceeds the cap and interpolate the exact boundary
     within that level.
     """
+    if side not in ("buy", "sell"):
+        raise ValueError(f"side must be 'buy' or 'sell', got {side!r}")
     mid = ob.mid
     if mid <= 0:
         return 0.0
