@@ -6,7 +6,7 @@ from pytest_httpx import HTTPXMock
 
 from bliq.data.binance_rest import BinanceRestClient
 from bliq.data.rate_limiter import WeightRateLimiter
-from bliq.infra.errors import BinanceAPIError, RateLimitError
+from bliq.infra.errors import BinanceAPIError, RateLimitError, SymbolNotFoundError
 
 BASE = "https://fapi.binance.com"
 
@@ -67,7 +67,7 @@ async def test_429_raises_rate_limit_error(
             await client.fetch_depth("BTCUSDT", limit=20)
 
 
-async def test_4xx_other_raises_api_error(
+async def test_symbol_not_found_raises_specific_error(
     client: BinanceRestClient, httpx_mock: HTTPXMock
 ):
     url = f"{BASE}/fapi/v1/depth?symbol=FOOUSDT&limit=20"
@@ -75,8 +75,24 @@ async def test_4xx_other_raises_api_error(
         url=url, status_code=400, json={"code": -1121, "msg": "Invalid symbol."}
     )
     async with client:
-        with pytest.raises(BinanceAPIError):
+        with pytest.raises(SymbolNotFoundError):
             await client.fetch_depth("FOOUSDT", limit=20)
+
+
+async def test_4xx_other_code_raises_generic_api_error(
+    client: BinanceRestClient, httpx_mock: HTTPXMock
+):
+    url = f"{BASE}/fapi/v1/depth?symbol=BTCUSDT&limit=20"
+    httpx_mock.add_response(
+        url=url,
+        status_code=400,
+        json={"code": -1100, "msg": "Illegal characters found in parameter."},
+    )
+    async with client:
+        with pytest.raises(BinanceAPIError) as exc_info:
+            await client.fetch_depth("BTCUSDT", limit=20)
+    # Must be plain BinanceAPIError, not the SymbolNotFoundError subclass.
+    assert not isinstance(exc_info.value, SymbolNotFoundError)
 
 
 async def test_reconciles_weight_header(
