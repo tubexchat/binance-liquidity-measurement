@@ -26,6 +26,11 @@ console = Console()
 DEFAULT_CONFIG = Path("config/default.yaml")
 
 
+@app.callback()
+def _main() -> None:
+    """Forces typer to treat subcommands as required even with one command."""
+
+
 def _bootstrap(config_path: Path) -> Config:
     try:
         cfg = load_config(config_path)
