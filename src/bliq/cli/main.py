@@ -14,6 +14,7 @@ from bliq.infra.config import Config, load_config
 from bliq.infra.errors import BliqError
 from bliq.infra.logging import setup_logging
 from bliq.modes.snapshot import run_snapshot_once
+from bliq.modes.watch import run_watch
 
 app = typer.Typer(
     name="bliq",
@@ -115,3 +116,39 @@ def snapshot(
         f"[green]persisted {len(reports)} snapshot(s) to "
         f"{db or cfg.storage.db_path}[/green]"
     )
+
+
+@app.command("watch")
+def watch(
+    symbols: str = typer.Option(..., "--symbols", help="Comma-separated list of symbols to watch"),
+    config_path: Path = typer.Option(  # noqa: B008
+        DEFAULT_CONFIG, "--config", help="Path to config yaml"
+    ),
+    interval: float = typer.Option(10.0, "--interval", help="Snapshot interval in seconds"),
+    large_trade: float = typer.Option(
+        50_000.0, "--large-trade", help="Large trade threshold in USDT"
+    ),
+    cvd_surge: float = typer.Option(
+        200_000.0, "--cvd-surge", help="CVD surge threshold in USDT (5min window)"
+    ),
+) -> None:
+    """Watch symbols in real time and detect whale activity signals."""
+    cfg = _bootstrap(config_path)
+    target_symbols = [s.strip() for s in symbols.split(",") if s.strip()]
+    if not target_symbols:
+        console.print("[red]no symbols provided[/red]")
+        raise typer.Exit(code=2)
+
+    try:
+        asyncio.run(
+            run_watch(
+                target_symbols,
+                cfg,
+                snapshot_interval=interval,
+                large_trade_threshold=large_trade,
+                cvd_surge_threshold=cvd_surge,
+            )
+        )
+    except BliqError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
