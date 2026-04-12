@@ -1,0 +1,16 @@
+.git
+.venv
+__pycache__
+*.db
+*.db-journal
+*.db-wal
+logs
+.ruff_cache
+.pytest_cache
+.env
+.env.*
+tests
+docs
+*.sh
+*.log
+.claude

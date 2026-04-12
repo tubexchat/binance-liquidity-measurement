@@ -13,6 +13,7 @@ from bliq.data.symbols import SymbolSelection, resolve_symbols
 from bliq.infra.config import Config, load_config
 from bliq.infra.errors import BliqError
 from bliq.infra.logging import setup_logging
+from bliq.modes.contrarian import run_contrarian_scan
 from bliq.modes.snapshot import run_snapshot_once
 from bliq.modes.watch import run_watch
 
@@ -149,6 +150,33 @@ def watch(
                 cvd_surge_threshold=cvd_surge,
             )
         )
+    except BliqError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+
+@app.command("scan-whales")
+def scan_whales(
+    config_path: Path = typer.Option(  # noqa: B008
+        DEFAULT_CONFIG, "--config", help="Path to config yaml"
+    ),
+    top_n: int = typer.Option(20, "--top-n", help="Number of top movers to scan"),
+    loop_minutes: int = typer.Option(0, "--loop", help="Run every N minutes (0 = run once)"),
+) -> None:
+    """Scan top movers for contrarian whale buying and alert via Telegram."""
+    cfg = _bootstrap(config_path)
+
+    async def _run():
+        while True:
+            signals = await run_contrarian_scan(cfg, top_n=top_n)
+            console.print(f"[green]Scan complete: {len(signals)} signal(s)[/green]")
+            if loop_minutes <= 0:
+                break
+            console.print(f"[dim]Next scan in {loop_minutes} minutes...[/dim]")
+            await asyncio.sleep(loop_minutes * 60)
+
+    try:
+        asyncio.run(_run())
     except BliqError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from exc

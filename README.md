@@ -9,6 +9,9 @@ bliq fetches real-time order book data from Binance, computes a suite of liquidi
 - One-shot snapshot of any USDT-M perpetual contract
 - Batch scanning across all 500+ trading pairs
 - Computes spread, depth, order book imbalance, slippage ladder, and capacity metrics
+- Real-time whale detection via WebSocket aggTrades streaming
+- Contrarian whale scanner with Telegram alerts — detects accumulation against the trend
+- Docker deployment with one-command setup
 - SQLite persistence with WAL mode for concurrent reads
 - Configurable via YAML (depth bands, slippage levels, OBI levels, retry policy)
 - Rate-limit aware with automatic backoff and retry
@@ -54,10 +57,79 @@ symbols:
 uv run bliq snapshot --from-file symbols.yaml
 ```
 
-### Override database path
+## Whale Detection
+
+### Real-time watch mode
+
+Monitor symbols in real time for whale activity signals:
 
 ```bash
-uv run bliq snapshot --symbols BTCUSDT --db /tmp/bliq.db
+uv run bliq watch --symbols BTCUSDT,ETHUSDT,SOLUSDT --interval 8 --large-trade 30000
+```
+
+Detects 5 signal types:
+
+| Signal | Description |
+|--------|-------------|
+| **OBI Shift** | Sudden order book imbalance change between snapshots |
+| **Depth Pulse** | Abnormal depth surge at specific price bands (3x+) |
+| **Cap Asymmetry** | One-sided capacity dominance (buy/sell ratio > 3x) |
+| **Large Trade** | Single trade exceeding configurable threshold |
+| **CVD Surge** | Cumulative volume delta exceeding threshold (5min window) |
+
+Options:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--interval` | 10s | Order book snapshot frequency |
+| `--large-trade` | $50,000 | Large trade alert threshold |
+| `--cvd-surge` | $200,000 | CVD surge alert threshold |
+
+### Contrarian whale scanner (with Telegram alerts)
+
+Scans top movers for "bearish book + sudden large buys" — contrarian accumulation:
+
+```bash
+# Single scan
+uv run bliq scan-whales --top-n 20
+
+# Loop every 5 minutes
+uv run bliq scan-whales --top-n 20 --loop 5
+```
+
+Detection logic:
+1. Fetches 24h ticker, picks top 20 movers by price change
+2. For each: fetches order book + recent aggTrades
+3. Identifies symbols where OBI is negative (sellers dominate) but large buy trades are present
+4. Sends Markdown-formatted alerts to Telegram
+
+Requires `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` environment variables.
+
+## Docker Deployment
+
+### Setup
+
+1. Create `.env` in the project root:
+
+```
+TELEGRAM_BOT_TOKEN=your_bot_token
+TELEGRAM_CHAT_ID=your_chat_id
+```
+
+2. Deploy with one command:
+
+```bash
+./deploy.sh
+```
+
+This syncs the code to the server, builds the Docker image, and starts a container that scans every 5 minutes.
+
+### Manual Docker commands
+
+```bash
+docker compose up -d --build    # start
+docker compose logs -f          # follow logs
+docker compose down             # stop
 ```
 
 ## Metrics
@@ -148,9 +220,10 @@ See [`config/default.yaml`](config/default.yaml) for the full reference.
 ```
 src/bliq/
   cli/          CLI entry point (Typer)
-  data/         Binance REST client, rate limiter, SQLite storage
-  metrics/      Pure metric functions (spread, depth, OBI, slippage)
-  modes/        Execution modes (snapshot)
+  data/         Binance REST client, WebSocket client, rate limiter, SQLite storage
+  metrics/      Pure metric functions (spread, depth, OBI, slippage, whale signals)
+  modes/        Execution modes (snapshot, watch, contrarian scan)
+  notify/       Telegram notification
   infra/        Config, logging, error types
 ```
 
@@ -161,9 +234,9 @@ The design separates data fetching, metric computation, and persistence into ind
 | Milestone | Status | Description |
 |-----------|--------|-------------|
 | M1 | Done | `snapshot` — static order book metrics |
-| M2 | Planned | `scan` — batch all pairs, 24h ticker ranking, Amihud illiquidity, taker ratio |
-| M3 | Planned | `monitor` — WebSocket streaming, composite `liquidity_score` |
-| M4 | Planned | `analyze` — historical trends, cross-pair comparison |
+| M2 | Done | `watch` — real-time whale detection via WebSocket |
+| M3 | Done | `scan-whales` — contrarian scanner with Telegram alerts + Docker deployment |
+| M4 | Planned | `analyze` — historical trends, cross-pair comparison, composite `liquidity_score` |
 
 ## Development
 

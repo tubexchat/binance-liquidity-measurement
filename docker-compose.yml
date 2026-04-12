@@ -1,0 +1,14 @@
+services:
+  whale-scanner:
+    build: .
+    container_name: bliq-whale-scanner
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
