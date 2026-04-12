@@ -16,7 +16,7 @@ DDL = [
     CREATE TABLE IF NOT EXISTS snapshots (
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
         symbol          TEXT    NOT NULL,
-        ts              INTEGER NOT NULL,
+        ts_ms           INTEGER NOT NULL,
         mid_price       REAL    NOT NULL,
         spread_bps      REAL    NOT NULL,
         obi_5           REAL,
@@ -33,7 +33,7 @@ DDL = [
         liquidity_score REAL
     )
     """,
-    "CREATE INDEX IF NOT EXISTS idx_snapshots_symbol_ts ON snapshots(symbol, ts)",
+    "CREATE INDEX IF NOT EXISTS idx_snapshots_symbol_ts ON snapshots(symbol, ts_ms)",
     """
     CREATE TABLE IF NOT EXISTS slippage_points (
         snapshot_id   INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
@@ -97,7 +97,7 @@ class SnapshotStore:
     def insert_report(self, report: LiquidityReport) -> int:
         row = {
             "symbol": report.symbol,
-            "ts": report.ts_ms,
+            "ts_ms": report.ts_ms,
             "mid_price": report.mid_price,
             "spread_bps": report.spread.spread_bps,
             "obi_5": report.obi.by_levels.get(5),
@@ -137,7 +137,8 @@ class SnapshotStore:
                     ],
                 )
                 conn.commit()
-                assert snap_id is not None  # lastrowid is Optional[int]; narrow type
-                return int(snap_id)
+                if snap_id is None:
+                    raise StorageError("lastrowid unexpectedly None after INSERT")
+                return snap_id
         except sqlite3.Error as exc:
             raise StorageError(f"failed to insert report: {exc}") from exc
