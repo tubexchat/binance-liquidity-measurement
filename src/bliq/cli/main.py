@@ -161,6 +161,9 @@ def scan_whales(
         DEFAULT_CONFIG, "--config", help="Path to config yaml"
     ),
     top_n: int = typer.Option(20, "--top-n", help="Number of top movers to scan"),
+    max_ls: float = typer.Option(
+        1.5, "--max-ls", help="Max long/short account ratio (skip if >=)"
+    ),
     loop_minutes: int = typer.Option(0, "--loop", help="Run every N minutes (0 = run once)"),
 ) -> None:
     """Scan top movers for contrarian whale buying and alert via Telegram."""
@@ -168,7 +171,7 @@ def scan_whales(
 
     async def _run():
         while True:
-            signals = await run_contrarian_scan(cfg, top_n=top_n)
+            signals = await run_contrarian_scan(cfg, top_n=top_n, max_long_short_ratio=max_ls)
             console.print(f"[green]Scan complete: {len(signals)} signal(s)[/green]")
             if loop_minutes <= 0:
                 break

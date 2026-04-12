@@ -39,6 +39,7 @@ class ContrarianSignal:
     large_buys_count: int
     total_buy_vol: float
     total_sell_vol: float
+    long_short_ratio: float | None
 
 
 async def _fetch_top_gainers(base_url: str, top_n: int = 20) -> list[dict]:
@@ -58,6 +59,24 @@ async def _fetch_top_gainers(base_url: str, top_n: int = 20) -> list[dict]:
     ]
     usdt_tickers.sort(key=lambda t: abs(float(t["priceChangePercent"])), reverse=True)
     return usdt_tickers[:top_n]
+
+
+async def _fetch_long_short_ratio(base_url: str, symbol: str) -> float | None:
+    """Fetch the latest global long/short account ratio for a symbol.
+
+    Returns the ratio (long accounts / short accounts), or None on failure.
+    """
+    url = f"{base_url}/futures/data/globalLongShortAccountRatio"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(url, params={"symbol": symbol, "period": "5m", "limit": 1})
+            resp.raise_for_status()
+            data = resp.json()
+            if data:
+                return float(data[0]["longShortRatio"])
+    except Exception as exc:
+        logger.warning(f"{symbol}: failed to fetch long/short ratio ({exc})")
+    return None
 
 
 async def _fetch_recent_trades(base_url: str, symbol: str, limit: int = 100) -> list[dict]:
@@ -89,6 +108,7 @@ def _format_signal(sig: ContrarianSignal) -> str:
         f"  Large buy trades: `{sig.large_buys_count}` totaling `${sig.large_buys_usdt:,.0f}`",
         f"  Buy/Sell ratio: `{buy_sell_ratio:.2f}x`",
         f"  Total buy: `${sig.total_buy_vol:,.0f}` | sell: `${sig.total_sell_vol:,.0f}`",
+        f"  Long/Short acct ratio: `{sig.long_short_ratio:.3f}`" if sig.long_short_ratio is not None else "  Long/Short acct ratio: `N/A`",
         "",
         "_Someone is accumulating against the trend_",
     ]
@@ -101,6 +121,7 @@ async def run_contrarian_scan(
     top_n: int = 20,
     obi_threshold: float = -0.15,
     large_trade_pct: float = 0.05,
+    max_long_short_ratio: float = 1.5,
 ) -> list[ContrarianSignal]:
     """Scan top movers for contrarian whale buying.
 
@@ -109,6 +130,8 @@ async def run_contrarian_scan(
         obi_threshold: OBI must be below this (negative = sellers dominate).
         large_trade_pct: A trade is "large" if its notional exceeds this fraction
                          of the total recent volume.
+        max_long_short_ratio: Skip symbols where global long/short account ratio
+                              exceeds this value — too crowded on the long side.
     """
     logger.info(f"Starting contrarian scan: top {top_n} movers")
 
@@ -157,6 +180,9 @@ async def run_contrarian_scan(
                     # Must be bearish (OBI negative)
                     if obi_5 > obi_threshold:
                         return None
+
+                    # Fetch global long/short account ratio
+                    ls_ratio = await _fetch_long_short_ratio(cfg.data.rest_base, symbol)
 
                     # Fetch recent trades
                     trades = await _fetch_recent_trades(cfg.data.rest_base, symbol, limit=200)
@@ -207,6 +233,7 @@ async def run_contrarian_scan(
                         large_buys_count=len(large_buys),
                         total_buy_vol=total_buy,
                         total_sell_vol=total_sell,
+                        long_short_ratio=ls_ratio,
                     )
 
                 except Exception as exc:
@@ -216,13 +243,24 @@ async def run_contrarian_scan(
         results = await asyncio.gather(*[_analyze(s) for s in symbols_info])
         signals = [r for r in results if r is not None]
 
-    # Step 3: Send alerts
+    # Step 3: Send alerts (only push symbols with long/short ratio < threshold)
     if signals:
         logger.info(f"Found {len(signals)} contrarian signal(s)")
+        pushed = 0
         for sig in signals:
+            if sig.long_short_ratio is not None and sig.long_short_ratio >= max_long_short_ratio:
+                logger.info(
+                    f"SKIP push {sig.symbol}: long/short ratio {sig.long_short_ratio:.3f} >= {max_long_short_ratio}"
+                )
+                continue
+            if sig.long_short_ratio is None:
+                logger.info(f"SKIP push {sig.symbol}: long/short ratio unavailable")
+                continue
             msg = _format_signal(sig)
-            logger.info(f"CONTRARIAN: {sig.symbol} OBI={sig.obi_5:+.3f} large_buys=${sig.large_buys_usdt:,.0f}")
+            logger.info(f"CONTRARIAN: {sig.symbol} OBI={sig.obi_5:+.3f} large_buys=${sig.large_buys_usdt:,.0f} L/S={sig.long_short_ratio:.3f}")
             await send_telegram(msg)
+            pushed += 1
+        logger.info(f"Pushed {pushed}/{len(signals)} signal(s) to Telegram")
     else:
         logger.info("No contrarian signals detected this round")
 
