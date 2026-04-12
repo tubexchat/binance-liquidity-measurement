@@ -4,7 +4,7 @@ set -euo pipefail
 # --- Config ---
 SERVER="ubuntu@43.153.133.202"
 SSH_KEY="$HOME/Documents/tencent_vpn"
-REMOTE_DIR="$HOME/binance-liquidity-measurement"
+REMOTE_DIR="/home/ubuntu/binance-liquidity-measurement"
 SSH_OPTS="-i $SSH_KEY -o ServerAliveInterval=30 -o StrictHostKeyChecking=accept-new"
 
 echo "==> Syncing project files to server..."
