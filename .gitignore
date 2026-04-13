@@ -19,3 +19,4 @@ htmlcov/
 .vscode/
 .env
 .env.*
+login.sh
