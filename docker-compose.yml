@@ -5,8 +5,29 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      BLIQ_DB_PATH: /app/data/liquidity.db
     volumes:
       - ./data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  signals-api:
+    build: .
+    container_name: bliq-signals-api
+    restart: unless-stopped
+    command: ["uv", "run", "bliq", "serve", "--host", "0.0.0.0", "--port", "8787"]
+    env_file:
+      - .env
+    environment:
+      BLIQ_DB_PATH: /app/data/liquidity.db
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "8787:8787"
     logging:
       driver: json-file
       options:

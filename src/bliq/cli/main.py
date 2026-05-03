@@ -183,3 +183,22 @@ def scan_whales(
     except BliqError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from exc
+
+
+@app.command("serve")
+def serve(
+    config_path: Path = typer.Option(  # noqa: B008
+        DEFAULT_CONFIG, "--config", help="Path to config yaml"
+    ),
+    host: str = typer.Option("0.0.0.0", "--host"),
+    port: int = typer.Option(8787, "--port"),
+) -> None:
+    """Run the HTTP API for querying stored signals."""
+    import uvicorn
+
+    from bliq.api.server import create_app
+
+    cfg = _bootstrap(config_path)
+    api = create_app(cfg.storage.db_path)
+    console.print(f"[green]Serving bliq API on http://{host}:{port}[/green]")
+    uvicorn.run(api, host=host, port=port, log_level=cfg.logging.level.lower())

@@ -13,6 +13,8 @@ dependencies = [
     "loguru>=0.7",
     "rich>=13.7",
     "websockets>=13.0",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
 ]
 
 [project.scripts]

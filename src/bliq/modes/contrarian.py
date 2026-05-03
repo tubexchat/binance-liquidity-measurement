@@ -23,7 +23,9 @@ from bliq.infra.config import Config
 from bliq.metrics.obi import compute_obi
 from bliq.metrics.slippage import compute_slippage
 from bliq.metrics.spread import compute_spread
+from bliq.notify.signal_store import SignalStore
 from bliq.notify.telegram import send_telegram
+from bliq.notify.ws_push import push_signal
 
 
 @dataclass
@@ -40,6 +42,8 @@ class ContrarianSignal:
     total_buy_vol: float
     total_sell_vol: float
     long_short_ratio: float | None
+    macd_15m: float | None
+    direction: str  # "LONG" or "SHORT"
 
 
 async def _fetch_top_gainers(base_url: str, top_n: int = 20) -> list[dict]:
@@ -88,17 +92,69 @@ async def _fetch_recent_trades(base_url: str, symbol: str, limit: int = 100) -> 
         return resp.json()
 
 
+async def _fetch_klines(
+    base_url: str, symbol: str, interval: str = "15m", limit: int = 100
+) -> list[list]:
+    """Fetch recent klines for a symbol. Returns Binance's raw kline array."""
+    url = f"{base_url}/fapi/v1/klines"
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(
+            url, params={"symbol": symbol, "interval": interval, "limit": limit}
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
+def _ema(values: list[float], period: int) -> list[float]:
+    """Exponential moving average. Seeded with SMA of first `period` values.
+
+    Returns a list aligned with `values`; entries before seeding are filled
+    with the seed value so the output length matches the input length.
+    """
+    if len(values) < period:
+        return []
+    k = 2.0 / (period + 1)
+    seed = sum(values[:period]) / period
+    out = [seed] * period
+    prev = seed
+    for v in values[period:]:
+        prev = v * k + prev * (1 - k)
+        out.append(prev)
+    return out
+
+
+def _macd_line_latest(
+    closes: list[float], fast: int = 12, slow: int = 26
+) -> float | None:
+    """Compute the latest MACD line value (DIF = EMA_fast - EMA_slow).
+
+    Returns None if insufficient data.
+    """
+    if len(closes) < slow:
+        return None
+    ema_fast = _ema(closes, fast)
+    ema_slow = _ema(closes, slow)
+    if not ema_fast or not ema_slow:
+        return None
+    return ema_fast[-1] - ema_slow[-1]
+
+
 def _format_signal(sig: ContrarianSignal) -> str:
     """Format a contrarian signal as a Telegram message."""
-    direction = "+" if sig.price_change_pct > 0 else ""
+    pct_sign = "+" if sig.price_change_pct > 0 else ""
     buy_sell_ratio = sig.total_buy_vol / sig.total_sell_vol if sig.total_sell_vol > 0 else 999
+    macd_str = f"{sig.macd_15m:+.6g}" if sig.macd_15m is not None else "N/A"
+    action_cn = "做多" if sig.direction == "LONG" else "做空"
 
     lines = [
-        "*CONTRARIAN WHALE DETECTED*",
+        f"*CONTRARIAN WHALE — {sig.direction}*",
         "",
-        f"*{sig.symbol}* | {direction}{sig.price_change_pct:.2f}% (24h)",
+        f"*{sig.symbol}* | {pct_sign}{sig.price_change_pct:.2f}% (24h)",
         f"Mid: `${sig.mid_price:.6g}`",
         f"Spread: `{sig.spread_bps:.2f} bps`",
+        "",
+        f"*方向建议: {action_cn}*",
+        f"  15m MACD (DIF): `{macd_str}`",
         "",
         "*Bearish Signals:*",
         f"  OBI-5: `{sig.obi_5:+.3f}` (sellers dominate)",
@@ -134,6 +190,9 @@ async def run_contrarian_scan(
                               exceeds this value — too crowded on the long side.
     """
     logger.info(f"Starting contrarian scan: top {top_n} movers")
+
+    store = SignalStore(cfg.storage.db_path)
+    store.init_schema()
 
     # Step 1: Get top movers
     top_movers = await _fetch_top_gainers(cfg.data.rest_base, top_n)
@@ -221,9 +280,24 @@ async def run_contrarian_scan(
                     if not large_buys or sum(large_buys) < total_vol * 0.1:
                         return None
 
+                    # Fetch 15m klines and compute MACD line (DIF)
+                    macd_15m: float | None = None
+                    try:
+                        klines = await _fetch_klines(cfg.data.rest_base, symbol, "15m", 100)
+                        closes = [float(k[4]) for k in klines]
+                        macd_15m = _macd_line_latest(closes)
+                    except Exception as exc:
+                        logger.warning(f"{symbol}: klines/MACD failed ({exc})")
+
+                    price_change = symbols_info[symbol]
+                    if macd_15m is not None and macd_15m > 0 and price_change >= 0:
+                        direction = "LONG"
+                    else:
+                        direction = "SHORT"
+
                     return ContrarianSignal(
                         symbol=symbol,
-                        price_change_pct=symbols_info[symbol],
+                        price_change_pct=price_change,
                         mid_price=spread.mid,
                         spread_bps=spread.spread_bps,
                         obi_5=obi_5,
@@ -234,6 +308,8 @@ async def run_contrarian_scan(
                         total_buy_vol=total_buy,
                         total_sell_vol=total_sell,
                         long_short_ratio=ls_ratio,
+                        macd_15m=macd_15m,
+                        direction=direction,
                     )
 
                 except Exception as exc:
@@ -248,17 +324,40 @@ async def run_contrarian_scan(
         logger.info(f"Found {len(signals)} contrarian signal(s)")
         pushed = 0
         for sig in signals:
-            if sig.long_short_ratio is not None and sig.long_short_ratio >= max_long_short_ratio:
+            if sig.long_short_ratio is None:
+                logger.info(f"SKIP push {sig.symbol}: long/short ratio unavailable")
+                store.insert_signal(sig, pushed=False, skip_reason="ls_ratio_unavailable")
+                continue
+            if sig.long_short_ratio >= max_long_short_ratio:
                 logger.info(
                     f"SKIP push {sig.symbol}: long/short ratio {sig.long_short_ratio:.3f} >= {max_long_short_ratio}"
                 )
+                store.insert_signal(sig, pushed=False, skip_reason="ls_ratio_too_high")
                 continue
-            if sig.long_short_ratio is None:
-                logger.info(f"SKIP push {sig.symbol}: long/short ratio unavailable")
-                continue
+
+            # 上线超过 52 周(约 1 年)的老币：无视一切因子直接标做空
+            try:
+                weekly_klines = await _fetch_klines(cfg.data.rest_base, sig.symbol, "1w", 1000)
+                if len(weekly_klines) > 52 and sig.direction != "SHORT":
+                    logger.info(
+                        f"{sig.symbol}: weekly klines={len(weekly_klines)} > 52, forcing SHORT"
+                    )
+                    sig.direction = "SHORT"
+            except Exception as exc:
+                logger.warning(f"{sig.symbol}: weekly klines fetch failed ({exc})")
+
             msg = _format_signal(sig)
-            logger.info(f"CONTRARIAN: {sig.symbol} OBI={sig.obi_5:+.3f} large_buys=${sig.large_buys_usdt:,.0f} L/S={sig.long_short_ratio:.3f}")
-            await send_telegram(msg)
+            macd_log = f"{sig.macd_15m:+.4g}" if sig.macd_15m is not None else "N/A"
+            logger.info(
+                f"CONTRARIAN[{sig.direction}]: {sig.symbol} OBI={sig.obi_5:+.3f} "
+                f"large_buys=${sig.large_buys_usdt:,.0f} L/S={sig.long_short_ratio:.3f} "
+                f"MACD15m={macd_log}"
+            )
+            store.insert_signal(sig, pushed=True)
+            await asyncio.gather(
+                send_telegram(msg),
+                push_signal(sig),
+            )
             pushed += 1
         logger.info(f"Pushed {pushed}/{len(signals)} signal(s) to Telegram")
     else:

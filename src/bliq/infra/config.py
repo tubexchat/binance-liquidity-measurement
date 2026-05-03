@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 from pathlib import Path
 from typing import Literal
 
@@ -84,8 +85,12 @@ def load_config(path: Path) -> Config:
     except yaml.YAMLError as exc:
         raise ConfigError(f"invalid YAML in {path}: {exc}") from exc
     try:
-        return Config.model_validate(raw)
+        cfg = Config.model_validate(raw)
     except ValidationError as exc:
         # Unwrap pydantic errors so ConfigError messages are readable.
         msgs = "; ".join(e["msg"] for e in exc.errors())
         raise ConfigError(f"config validation failed: {msgs}") from exc
+    db_override = os.environ.get("BLIQ_DB_PATH", "").strip()
+    if db_override:
+        cfg.storage.db_path = db_override
+    return cfg
